@@ -8,8 +8,16 @@ defmodule Membrane.Realtimer do
   """
   use Membrane.Filter
 
+  require Membrane.Logger
+
   alias __MODULE__.Events
   alias Membrane.{Buffer, Time}
+
+  # `Process.send_after/3` raises when the delay exceeds the VM's maximum time value (a buffer
+  # with pts of 2^63 ns is already enough), and OTP versions before 18 rejected anything above
+  # 2^32 - 1 ms (about 49 days). Delays are clamped to the latter: for a media stream, waiting
+  # 49 days or longer makes no practical difference, while raising would crash the element.
+  @max_send_after_time 4_294_967_295
 
   def_input_pad :input,
     accepted_format: _any,
@@ -281,6 +289,21 @@ defmodule Membrane.Realtimer do
       (target_time - Time.monotonic_time())
       |> max(0)
       |> Time.as_milliseconds(:round)
+
+    send_after_time =
+      if send_after_time > @max_send_after_time do
+        # A timestamp this far ahead comes from a broken or malicious stream. Timestamp
+        # discontinuities should be signalled with a `Reset` event.
+        Membrane.Logger.warning("""
+        Buffer with timestamp #{Time.pretty_duration(buffer_timestamp)} is scheduled more than \
+        #{Time.pretty_duration(Time.milliseconds(@max_send_after_time))} ahead, clamping the delay. \
+        If this is a stream discontinuity, send #{inspect(Events.Reset)} event before the buffer.
+        """)
+
+        @max_send_after_time
+      else
+        send_after_time
+      end
 
     Process.send_after(
       self(),

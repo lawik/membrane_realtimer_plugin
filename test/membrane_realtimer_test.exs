@@ -327,6 +327,24 @@ defmodule Membrane.RealtimerTest do
     test_scenario(instructions, assertions, Time.milliseconds(600))
   end
 
+  test "Doesn't crash on a timestamp jump bigger than the maximal Process.send_after/3 delay" do
+    # pts of 2^63 ns, as produced by a corrupt container or a wrongly handled timestamp wrap
+    bogus_pts_ms = Time.as_milliseconds(Integer.pow(2, 63), :round)
+
+    spec =
+      child(:src, %Membrane.Realtimer.TimedSource{
+        instructions: [buffer: {0, 0}, buffer: {1, bogus_pts_ms}]
+      })
+      |> child(:realtimer, Realtimer)
+      |> child(:sink, Testing.Sink)
+
+    pipeline = Testing.Pipeline.start_link_supervised!(spec: spec)
+    assert_sink_buffer(pipeline, :sink, %Buffer{payload: 0})
+    refute_sink_buffer(pipeline, :sink, _buffer, 200)
+    assert Testing.Pipeline.get_child_pid!(pipeline, :realtimer) |> Process.alive?()
+    Testing.Pipeline.terminate(pipeline)
+  end
+
   defp test_scenario(instructions, assertions, max_latency) do
     spec =
       child(:src, %Membrane.Realtimer.TimedSource{instructions: instructions})
